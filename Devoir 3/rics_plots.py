@@ -357,3 +357,133 @@ def plot_rics_schema(tau_p_s: float = 8e-6, tau_l_s: float = 2e-3, n_pix_row: in
     if savepath:
         fig.savefig(savepath, bbox_inches="tight")
     return fig
+
+# 5. FIGURES DE LA PARTIE B (devoir 3)
+def _profils_axes(result: dict, hw: int = 12):
+    """Extrait G(0,0), le profil le long de l'axe lent et de l'axe rapide."""
+    G, xi, eta = result["Gavg"], result["xi"], result["eta"]
+    i0, j0 = len(xi) // 2, len(eta) // 2
+    lags = np.arange(0, hw + 1)
+    lent = np.array([G[i0 + k, j0] for k in lags])
+    rapide = np.array([G[i0, j0 + k] for k in lags])
+    return lags, lent, rapide, G[i0, j0]
+
+
+def plot_diffusion_maps(results: dict[str, dict], hw: int = 12,
+                        savepath: str | Path | None = None):
+    """Cartes 2D de G(xi,eta) pour chaque coefficient de diffusion.
+
+    C'est la figure qui repond directement a la question : montrer que D
+    influence la forme de G. L'axe rapide est l'horizontale, l'axe lent la
+    verticale ; l'anisotropie n'apparait que si les particules bougent
+    pendant le balayage.
+    """
+    cas = sorted(results.items(), key=lambda kv: extract_D_from_case_name(kv[0]))
+    fig, axes = plt.subplots(1, len(cas), figsize=(3.0 * len(cas), 3.4))
+
+    for ax, (nom, r) in zip(np.atleast_1d(axes), cas):
+        G, xi, eta = r["Gavg"], r["xi"], r["eta"]
+        i0, j0 = len(xi) // 2, len(eta) // 2
+        vue = G[i0 - hw:i0 + hw + 1, j0 - hw:j0 + hw + 1].copy()
+        centre = vue[hw, hw]
+        vue[hw, hw] = np.nan                      # le lag (0,0) porte le bruit de photon
+        im = ax.imshow(vue, origin="lower", cmap="inferno",
+                       extent=[-hw, hw, -hw, hw], vmin=0, vmax=np.nanmax(vue))
+        ax.set_title("$D$ = %g µm²/s\n$G(0,0)$ = %.3f"
+                     % (extract_D_from_case_name(nom), centre), fontsize=9)
+        ax.set_xlabel(r"$\eta$ (axe rapide)")
+        ax.grid(False)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    np.atleast_1d(axes)[0].set_ylabel(r"$\xi$ (axe lent)")
+    fig.suptitle("Autocorrelation spatiale mesuree $G(\\xi,\\eta)$ : "
+                 "l'anisotropie apparait quand la diffusion est rapide", y=1.04)
+    fig.tight_layout()
+
+    if savepath:
+        fig.savefig(savepath, bbox_inches="tight", dpi=150)
+    return fig
+
+
+def plot_axis_profiles(results: dict[str, dict], hw: int = 12,
+                       savepath: str | Path | None = None):
+    """Profils de G le long des deux axes de balayage, et anisotropie mesuree.
+
+    Les profils sont normalises par G(0,0) pour que seule la FORME soit
+    comparee : l'amplitude, elle, depend du nombre de particules.
+    """
+    cas = sorted(results.items(), key=lambda kv: extract_D_from_case_name(kv[0]))
+    couleurs = plt.cm.viridis(np.linspace(0.05, 0.9, len(cas)))
+    fig, ax = plt.subplots(1, 3, figsize=(13, 3.6))
+
+    D_vals, aniso = [], []
+
+    for c, (nom, r) in zip(couleurs, cas):
+        lags, lent, rapide, g0 = _profils_axes(r, hw)
+        D = extract_D_from_case_name(nom)
+        D_vals.append(D)
+        # anisotropie = aire sous le profil rapide / aire sous le profil lent,
+        # lags 1 a hw (le lag 0 est commun aux deux et porte le bruit de photon)
+        aniso.append(rapide[1:].sum() / lent[1:].sum())
+
+        ax[0].plot(lags[1:], rapide[1:] / g0, "o-", color=c, ms=3, lw=1.4,
+                   label="$D$ = %g" % D)
+        ax[1].plot(lags[1:], lent[1:] / g0, "o-", color=c, ms=3, lw=1.4,
+                   label="$D$ = %g" % D)
+
+    for a_, titre, axe in [(ax[0], "(a) axe RAPIDE : pas de temps $\\tau_p$", r"$\eta$"),
+                           (ax[1], "(b) axe LENT : pas de temps $\\tau_l$", r"$\xi$")]:
+        a_.set_xlabel("%s (pixels)" % axe)
+        a_.set_ylabel("$G / G(0,0)$")
+        a_.set_ylim(0, 1.05)
+        a_.legend(fontsize=7)
+        a_.set_title(titre, fontsize=9.5)
+
+    ax[2].plot(D_vals, aniso, "o-", color="#2a78d6", ms=6)
+    ax[2].axhline(1.0, ls="--", color="k", lw=1.2, label="isotrope (aucun effet)")
+    ax[2].set_xscale("log")
+    ax[2].set_xlabel("$D$ simule (µm²/s)")
+    ax[2].set_ylabel("anisotropie rapide / lent")
+    ax[2].legend(fontsize=7)
+    ax[2].set_title("(c) anisotropie mesuree, sans aucun modele", fontsize=9.5)
+
+    fig.tight_layout()
+
+    if savepath:
+        fig.savefig(savepath, bbox_inches="tight", dpi=150)
+    return fig, np.array(D_vals), np.array(aniso)
+
+
+def plot_plage_mesurable(w0_um: float = 0.2, tau_p: float = 8e-6, tau_l: float = 9.04e-4,
+                         savepath: str | Path | None = None):
+    """Plage de D reellement mesurable pour un balayage donne.
+
+    RICS ne voit la diffusion que si la particule se deplace d'une fraction
+    utile de la PSF pendant l'intervalle sonde. On trace donc le parametre
+    sans dimension alpha = 4 D tau / w0^2 sur les deux axes : en dessous de
+    ~0.1 rien ne bouge, au dessus de ~10 tout est decorrele et D sature.
+    """
+    D = np.logspace(-2, 3, 400)
+    a_rapide = 4 * D * tau_p / w0_um ** 2
+    a_lent = 4 * D * tau_l / w0_um ** 2
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.2))
+    ax.loglog(D, a_rapide, lw=2, color="#2a78d6",
+              label=r"axe rapide ($\tau_p$ = %.0f µs)" % (1e6 * tau_p))
+    ax.loglog(D, a_lent, lw=2, color="#eb6834",
+              label=r"axe lent ($\tau_l$ = %.2f ms)" % (1e3 * tau_l))
+    ax.axhspan(0.1, 10, color="#1baf7a", alpha=0.15)
+    ax.axhline(0.1, ls=":", color="#1baf7a", lw=1.4)
+    ax.axhline(10, ls=":", color="#1baf7a", lw=1.4)
+    ax.text(1.5e-2, 1.0, "fenetre utile\n" + r"$0.1 < \alpha < 10$",
+            color="#0d6b4b", fontsize=8.5, va="center")
+    ax.set_xlabel("$D$ (µm²/s)")
+    ax.set_ylabel(r"$\alpha = 4 D \tau / w_0^2$")
+    ax.set_title("Plage de $D$ accessible : chaque axe ne sonde qu'une fenetre")
+    ax.legend(fontsize=8.5)
+    ax.set_ylim(1e-5, 1e5)
+    fig.tight_layout()
+
+    if savepath:
+        fig.savefig(savepath, bbox_inches="tight", dpi=150)
+    return fig
